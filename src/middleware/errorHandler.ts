@@ -7,6 +7,7 @@ const sendValidationError = (err: FastifyError, reply: FastifyReply) => {
     status: false,
     error: err.message || "Invalid request data",
     statusCode: HTTP_STATUS.BAD_REQUEST,
+    code: err.code,
     data: null,
   });
 };
@@ -16,6 +17,7 @@ const sendInternalServerErrors = (err: FastifyError, reply: FastifyReply) => {
     status: false,
     error: err.message || "Internal Server Error",
     statusCode: 500,
+    code: err.code,
     data: null,
   });
 };
@@ -33,7 +35,7 @@ export const errorHandler = async (
       status: error.status,
       error: error.message,
       statusCode: error.statusCode,
-      details: error.details,
+      code: error.code,
       data: null,
     });
   } else {

@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ObjectId } from "mongodb";
 
 export enum OrgPermissions {
   canCreateWorkSpace = "canCreateWorkSpace",
@@ -18,9 +19,9 @@ export enum OrgRoles {
   member = "member",
 }
 
-const OrgUserLink = Type.Object({
-  organizationId: Type.Array(Type.String()),
-  userId: Type.Array(Type.String()),
+export const OrgUserLinkSchema = Type.Object({
+  organizationId: Type.Unsafe<ObjectId>({ type: "string" }),
+  userId: Type.Unsafe<ObjectId>({ type: "string" }),
   role: Type.Optional(Type.Enum(OrgRoles)),
 
   permissions: Type.Optional(Type.Array(Type.Enum(OrgPermissions))),
@@ -29,4 +30,4 @@ const OrgUserLink = Type.Object({
   updatedAt: Type.Optional(Type.String({ format: "date-time" })),
 });
 
-export type WorkspaceT = Static<typeof OrgUserLink>;
+export type OrgUserLinkT = Static<typeof OrgUserLinkSchema>;

@@ -31,3 +31,5 @@ export const NODE_MAILER_SENDER_EMAIL = process.env
 export const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGIN
   ? process.env.ALLOWED_ORIGIN?.split(",")
   : "*";
+
+export const JWT_SECRET = process.env.JWT_SECRET || "superSecret";

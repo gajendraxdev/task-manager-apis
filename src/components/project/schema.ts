@@ -3,6 +3,7 @@ import type { ObjectId } from "mongodb";
 
 export const ProjectSchema = Type.Object({
   name: Type.Required(Type.String({ minLength: 2 })),
+  slug: Type.Optional(Type.String()),
   createdBy: Type.Unsafe<ObjectId>({ type: "string" }),
   organizationId: Type.Unsafe<ObjectId>({ type: "string" }),
   description: Type.Optional(Type.String()),

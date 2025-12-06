@@ -6,15 +6,16 @@ export class AppError extends Error {
 	public readonly code?: string;
 	public readonly details?: AnyType;
 
-	constructor(error: AnyType, statusCode = 500) {
+	constructor(error: AnyType, statusCode = 500, code?: string) {
 		if (typeof error === "object" && error !== null) {
 			super(error.message || error);
 			this.name = error.name || "Error";
-			this.code = error.code;
+			this.code = code || error.code;
 			this.details = { ...error };
 		} else {
 			super(error);
 			this.name = "AppError";
+			this.code = code;
 			this.details = error;
 		}
 

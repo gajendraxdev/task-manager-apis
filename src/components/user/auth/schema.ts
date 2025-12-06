@@ -13,5 +13,11 @@ const SignUpSchema = Type.Object({
   project: Type.Optional(Type.Object(ProjectSchema)),
 });
 
+export const SignInSchema = Type.Object({
+  email: Type.String({ format: "email" }),
+  password: Type.String(),
+});
+
 export type CheckUserPayloadT = Static<typeof CheckUserSchema>;
 export type SignUpUserPayloadType = Static<typeof SignUpSchema>;
+export type SignInPayloadT = Static<typeof SignInSchema>;

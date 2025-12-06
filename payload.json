@@ -1,0 +1,17 @@
+{
+  "user": {
+    "name": "Test User",
+    "username": "testuser",
+    "email": "test@example.com",
+    "password": "StrongPassword123",
+    "userSignedUpWith": "EMAIL"
+  },
+  "organization": {
+    "name": "Test Organization",
+    "description": "A dummy organization for testing"
+  },
+  "project": {
+    "name": "My First Project",
+    "description": "An initial project for the organization"
+  }
+}
