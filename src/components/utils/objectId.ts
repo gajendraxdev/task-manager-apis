@@ -1,9 +1,12 @@
-import { ObjectId } from "@fastify/mongodb";
+/**
+ * Legacy ObjectId utilities — kept as stubs after MongoDB → Prisma migration.
+ * Prisma uses string cuid IDs, so these are no-ops.
+ */
 
-export const validObjectId = (id: string) => {
-	return ObjectId.isValid(id);
+export const validObjectId = (id: string): boolean => {
+  return typeof id === "string" && id.length > 0;
 };
 
-export const objectId = (id: string) => {
-	return new ObjectId(id);
+export const objectId = (id: string): string => {
+  return id;
 };

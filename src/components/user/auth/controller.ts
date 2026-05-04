@@ -1,306 +1,292 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import {
-	ORG_COLLECTION,
-	ORG_USER_LINK_COLLECTION,
-	PROJECT_COLLECTION,
-	USER_COLLECTION,
-} from "../../../constants/collectionNames.ts";
 import { AppError } from "../../utils/AppError.ts";
 import { HTTP_STATUS } from "../../../constants/HTTP_STATUS.ts";
 import { filterData } from "../../utils/filterData.ts";
 import type { SignInPayloadT, SignUpUserPayloadType } from "./schema.ts";
-import type { OrganizationT } from "../../organization/schema.ts";
-import {
-	OrgPermissions,
-	OrgRoles,
-	type OrgUserLinkT,
-} from "../orgUserLink/schema.ts";
-import type { ProjectT } from "../../project/schema.ts";
+import { OrgPermissions, OrgRoles } from "../orgUserLink/schema.ts";
 import { sendOtp } from "../../utils/otp.ts";
 import { delCache, getCache } from "../../../lib/node-cache.ts";
 import { genLoginToken } from "../../../lib/jwt.ts";
-import { compare } from "bcrypt";
-import { catchHandler } from "../../utils/catchHandler.ts";
 import { compareHashAndData, hashString } from "../../../lib/bcrypt.ts";
-import { UserSignedUpWith, type UserT } from "../schema.ts";
+import { UserSignedUpWith } from "../schema.ts";
 import { generateUsernames } from "../../utils/userNameSuggetions.ts";
 import { slugify } from "../../utils/slugify.ts";
 import { ERROR_CODES } from "../../../constants/constants.ts";
+import prisma from "../../../lib/prisma.ts";
+import type { Prisma } from "../../../generated/prisma/client.js";
 
-// sign up
+// ─── Sign Up ──────────────────────────────────────────────────────────────────
 export const signup = async (
-	req: FastifyRequest<{ Body: SignUpUserPayloadType }>,
-	reply: FastifyReply,
+  req: FastifyRequest<{ Body: SignUpUserPayloadType }>,
+  reply: FastifyReply,
 ) => {
-	const db = req.server.mongo.db;
+  const { body } = req;
 
-	const { body } = req;
+  const userFields = filterData.addFields(body.user, [
+    "name",
+    "username",
+    "email",
+    "password",
+    "profileImageId",
+  ]) as {
+    name: string;
+    username: string;
+    email: string;
+    password: string;
+    profileImageId?: string;
+  };
 
-	const userPayload = {
-		...filterData.addFields(body.user, [
-			"name",
-			"username",
-			"email",
-			"password",
-			"profileImageId",
-		]),
-		password: await hashString(body.user.password),
-	} as UserT;
+  // Check if user already exists
+  const existingUser = await prisma.user.findUnique({
+    where: { email: userFields.email },
+  });
 
-	userPayload.userSignedUpWith = UserSignedUpWith.EMAIL;
+  if (existingUser) {
+    throw new AppError(
+      "You Are already registered on TaskFlow, Please login!",
+      HTTP_STATUS.BAD_REQUEST,
+    );
+  }
 
-	const organizationPayload = filterData.addFields(body.organization, [
-		"name",
-		"description",
-	]) as OrganizationT;
+  const hashedPassword = await hashString(userFields.password);
 
-	const projectPayload = filterData.addFields(body.project || {}, [
-		"name",
-		"description",
-	]) as ProjectT;
+  // Build org slug
+  const orgName = body.organization.name;
+  let orgSlug = slugify(orgName);
+  const existingOrgSlug = await prisma.organization.findUnique({
+    where: { slug: orgSlug },
+  });
+  if (existingOrgSlug) {
+    orgSlug = `${orgSlug}-${Math.floor(Math.random() * 1000)}`;
+  }
 
-	const checkUser = await db
-		?.collection(USER_COLLECTION)
-		.findOne({ email: userPayload.email });
+  // Run everything in a transaction
+  const result = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    // Create user
+    const user = await tx.user.create({
+      data: {
+        name: userFields.name,
+        username: userFields.username,
+        email: userFields.email,
+        password: hashedPassword,
+        profileImageId: userFields.profileImageId,
+        userSignedUpWith: UserSignedUpWith.EMAIL,
+        isEmailVerified: false,
+      },
+    });
 
-	if (checkUser)
-		throw new AppError(
-			"You Are already registered on TaskFlow, Please login!",
-			HTTP_STATUS.BAD_REQUEST,
-		);
+    // Create organization
+    const organization = await tx.organization.create({
+      data: {
+        name: orgName,
+        slug: orgSlug,
+        description: body.organization.description,
+        ownerId: user.id,
+      },
+    });
 
-	const user = await db?.collection(USER_COLLECTION).insertOne(userPayload);
-	if (!user?.insertedId) throw new AppError("User Creation Failed");
+    // Link user to org as owner with all permissions
+    await tx.orgUserLink.create({
+      data: {
+        organizationId: organization.id,
+        userId: user.id,
+        role: OrgRoles.owner as any,
+        permissions: Object.values(OrgPermissions) as any[],
+      },
+    });
 
-	organizationPayload.owner = user.insertedId;
+    // Create project if provided
+    if (body.project && Object.keys(body.project).length > 0) {
+      let projectSlug = slugify(body.project.name);
+      const existingProjectSlug = await tx.project.findUnique({
+        where: { slug: projectSlug },
+      });
+      if (existingProjectSlug) {
+        projectSlug = `${projectSlug}-${Math.floor(Math.random() * 1000)}`;
+      }
 
-	let slug = slugify(organizationPayload.name);
-	const existingSlug = await db?.collection(ORG_COLLECTION).findOne({ slug });
-	if (existingSlug) {
-		slug = `${slug}-${Math.floor(Math.random() * 1000)}`;
-	}
-	organizationPayload.slug = slug;
+      await tx.project.create({
+        data: {
+          name: body.project.name,
+          slug: projectSlug,
+          description: body.project.description,
+          organizationId: organization.id,
+          createdById: user.id,
+        },
+      });
+    }
 
-	const organization = await db
-		?.collection(ORG_COLLECTION)
-		.insertOne(organizationPayload);
+    return user;
+  });
 
-	if (!organization?.insertedId)
-		throw new AppError("Organization Creation Failed");
+  await sendOtp(result.email, result.name);
 
-	const orgUserLinkPayload: OrgUserLinkT = {
-		organizationId: organization.insertedId,
-		userId: user.insertedId,
-		role: OrgRoles.owner,
-		permissions: Object.values(OrgPermissions),
-	};
-
-	await db?.collection(ORG_USER_LINK_COLLECTION).insertOne(orgUserLinkPayload);
-
-	projectPayload.organizationId = organization.insertedId;
-	projectPayload.createdBy = user.insertedId;
-
-	if (Object.keys(body.project || {}).length) {
-		let projectSlug = slugify(projectPayload.name);
-		const existingProjectSlug = await db
-			?.collection(PROJECT_COLLECTION)
-			.findOne({ slug: projectSlug });
-		if (existingProjectSlug) {
-			projectSlug = `${projectSlug}-${Math.floor(Math.random() * 1000)}`;
-		}
-		projectPayload.slug = projectSlug;
-
-		const project = await db
-			?.collection(PROJECT_COLLECTION)
-			.insertOne(projectPayload);
-
-		if (!project?.insertedId) throw new AppError("Project Creation Failed");
-	}
-
-	await sendOtp(userPayload.email, userPayload.name);
-
-	return reply.status(HTTP_STATUS.CREATED).send({
-		status: true,
-		statusCode: HTTP_STATUS.CREATED,
-		error: null,
-		data: {
-			message:
-				"To compleat the registration we send a mail to your registered email, please verify.",
-		},
-	});
+  return reply.status(HTTP_STATUS.CREATED).send({
+    status: true,
+    statusCode: HTTP_STATUS.CREATED,
+    error: null,
+    data: {
+      message:
+        "To complete the registration we sent a mail to your registered email, please verify.",
+    },
+  });
 };
 
+// ─── Resend OTP ───────────────────────────────────────────────────────────────
 export const resendOtp = async (
-	req: FastifyRequest<{ Body: { email: string } }>,
-	reply: FastifyReply,
+  req: FastifyRequest<{ Body: { email: string } }>,
+  reply: FastifyReply,
 ) => {
-	const {
-		body: { email },
-	} = req;
+  const { email } = req.body;
 
-	const db = req.server.mongo.db;
-	const checkData = getCache(email);
+  const checkData = getCache(email);
+  if (!checkData) {
+    throw new AppError("Please login again", HTTP_STATUS.UNAUTHORIZED);
+  }
 
-	if (!checkData)
-		throw new AppError("Please login again", HTTP_STATUS.UNAUTHORIZED);
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    throw new AppError("Please login again", HTTP_STATUS.UNAUTHORIZED);
+  }
 
-	const user = await db?.collection(USER_COLLECTION).findOne({ email });
-	if (!user) throw new AppError("Please login again", HTTP_STATUS.UNAUTHORIZED);
+  await sendOtp(email, user.name);
 
-	await sendOtp(email, user.name);
-
-	return reply.status(HTTP_STATUS.OK).send({
-		status: true,
-		statusCode: HTTP_STATUS.OK,
-		error: null,
-		data: {
-			message: "Resent ot success.",
-		},
-	});
+  return reply.status(HTTP_STATUS.OK).send({
+    status: true,
+    statusCode: HTTP_STATUS.OK,
+    error: null,
+    data: { message: "OTP resent successfully." },
+  });
 };
 
+// ─── Verify OTP ───────────────────────────────────────────────────────────────
 export const verifyOtp = async (
-	req: FastifyRequest<{ Body: { email: string; otp: string } }>,
-	reply: FastifyReply,
+  req: FastifyRequest<{ Body: { email: string; otp: string } }>,
+  reply: FastifyReply,
 ) => {
-	const db = req.server.mongo.db;
+  const { email, otp } = req.body;
 
-	const {
-		body: { email, otp },
-	} = req;
+  if (!email || !otp) {
+    throw new AppError(
+      "Something went wrong! Please login again.",
+      HTTP_STATUS.FORBIDDEN,
+    );
+  }
 
-	if (!email || !otp)
-		throw new AppError(
-			"Something went wrong! Please login again.",
-			HTTP_STATUS.FORBIDDEN,
-		);
+  const cached = getCache(email) as { otp: string } | undefined;
+  if (!cached) {
+    throw new AppError("Please login again", HTTP_STATUS.UNAUTHORIZED);
+  }
 
-	const checkData = getCache(email) as { otp: string };
+  if (cached.otp !== otp) {
+    throw new AppError("Invalid OTP", HTTP_STATUS.FORBIDDEN);
+  }
 
-	if (!checkData) throw new AppError("Please login again", 401);
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    throw new AppError(
+      "Something went wrong, please login again!",
+      HTTP_STATUS.FORBIDDEN,
+    );
+  }
 
-	if (checkData.otp !== otp)
-		throw new AppError("Invalid otp", HTTP_STATUS.FORBIDDEN);
+  const token = genLoginToken({ _id: user.id });
+  delCache(email);
 
-	const user = await db?.collection(USER_COLLECTION).findOne({ email });
-	if (!user)
-		throw new AppError(
-			"Something went wrong please login again!",
-			HTTP_STATUS.FORBIDDEN,
-		);
+  await prisma.user.update({
+    where: { email },
+    data: { isEmailVerified: true },
+  });
 
-	const token = genLoginToken({ _id: user?._id });
-	delCache(email);
-
-	await db
-		?.collection(USER_COLLECTION)
-		.updateOne({ email }, { $set: { isEmailVerified: true } });
-
-	return reply.status(HTTP_STATUS.OK).send({
-		status: true,
-		statusCode: HTTP_STATUS.OK,
-		error: null,
-		data: {
-			message: "Otp verified success.",
-			token,
-		},
-	});
+  return reply.status(HTTP_STATUS.OK).send({
+    status: true,
+    statusCode: HTTP_STATUS.OK,
+    error: null,
+    data: {
+      message: "OTP verified successfully.",
+      token,
+    },
+  });
 };
 
+// ─── Check User ───────────────────────────────────────────────────────────────
 export const checkUser = async (
-	req: FastifyRequest<{ Body: { email: string } }>,
-	reply: FastifyReply,
+  req: FastifyRequest<{ Body: { email: string } }>,
+  reply: FastifyReply,
 ) => {
-	const db = req.server.mongo.db;
+  const { email } = req.body;
 
-	const {
-		body: { email },
-	} = req;
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { name: true, email: true, userSignedUpWith: true },
+  });
 
-	const data = await db
-		?.collection(USER_COLLECTION)
-		.findOne(
-			{ email },
-			{ projection: { name: true, email: true, userSignedUpWith: true } },
-		);
+  if (!user) {
+    throw new AppError(
+      "User not found",
+      HTTP_STATUS.NOT_FOUND,
+      ERROR_CODES.USER_NOT_FOUND,
+    );
+  }
 
-	if (!data)
-		throw new AppError(
-			"User not found",
-			HTTP_STATUS.NOT_FOUND,
-			ERROR_CODES.USER_NOT_FOUND,
-		);
-
-	return reply.status(HTTP_STATUS.OK).send({
-		status: true,
-		data: data,
-		statusCode: HTTP_STATUS.OK,
-		error: null,
-	});
+  return reply.status(HTTP_STATUS.OK).send({
+    status: true,
+    data: user,
+    statusCode: HTTP_STATUS.OK,
+    error: null,
+  });
 };
 
-// sign in
+// ─── Sign In ──────────────────────────────────────────────────────────────────
 export const signin = async (
-	req: FastifyRequest<{ Body: SignInPayloadT }>,
-	res: FastifyReply,
+  req: FastifyRequest<{ Body: SignInPayloadT }>,
+  res: FastifyReply,
 ) => {
-	const { email, password } = req.body;
+  const { email, password } = req.body;
 
-	const user = await req.server.mongo.db
-		?.collection(USER_COLLECTION)
-		.findOne({ email });
+  const user = await prisma.user.findUnique({ where: { email } });
 
-	if (!user) {
-		throw new AppError("Invalid credentials", HTTP_STATUS.UNAUTHORIZED);
-	}
+  if (!user) {
+    throw new AppError("Invalid credentials", HTTP_STATUS.UNAUTHORIZED);
+  }
 
-	const isPasswordValid = await compareHashAndData(password, user.password);
+  const isPasswordValid = await compareHashAndData(password, user.password);
+  if (!isPasswordValid) {
+    throw new AppError("Invalid credentials", HTTP_STATUS.UNAUTHORIZED);
+  }
 
-	if (!isPasswordValid) {
-		throw new AppError("Invalid credentials", HTTP_STATUS.UNAUTHORIZED);
-	}
+  await sendOtp(email, user.name);
 
-	await sendOtp(email, user.name);
-
-	return res.status(HTTP_STATUS.OK).send({
-		status: true,
-		statusCode: HTTP_STATUS.OK,
-		error: null,
-		data: {
-			message: "Otp sent to your registered email.",
-		},
-	});
+  return res.status(HTTP_STATUS.OK).send({
+    status: true,
+    statusCode: HTTP_STATUS.OK,
+    error: null,
+    data: { message: "OTP sent to your registered email." },
+  });
 };
 
+// ─── Suggest Usernames ────────────────────────────────────────────────────────
 export const suggestUserNames = async (
-	req: FastifyRequest<{ Querystring: { name: string } }>,
-	res: FastifyReply,
+  req: FastifyRequest<{ Querystring: { name: string } }>,
+  res: FastifyReply,
 ) => {
-	const { name } = req.query;
-	const db = req.server.mongo.db;
+  const { name } = req.query;
 
-	const generatedUserNames = generateUsernames(name);
+  const generatedUserNames = generateUsernames(name);
 
-	const existing = await db
-		?.collection(USER_COLLECTION)
-		.find({ username: { $in: generatedUserNames } })
-		.toArray();
+  // Filter out already-taken usernames
+  const existing = await prisma.user.findMany({
+    where: { username: { in: generatedUserNames } },
+    select: { username: true },
+  });
 
-	if (existing) {
-		for (const u of existing) {
-			const uni = generatedUserNames.findIndex(u.username);
-			if (uni < 0) continue;
+  const takenSet = new Set(existing.map((u: { username: string }) => u.username));
+  const available = generatedUserNames.filter((u) => !takenSet.has(u));
 
-			generatedUserNames.splice(1, uni);
-		}
-	}
-
-	return res.status(HTTP_STATUS.OK).send({
-		status: true,
-		statusCode: HTTP_STATUS.OK,
-		error: null,
-		data: {
-			suggestions: generatedUserNames, //returning top 6 user names
-		},
-	});
+  return res.status(HTTP_STATUS.OK).send({
+    status: true,
+    statusCode: HTTP_STATUS.OK,
+    error: null,
+    data: { suggestions: available },
+  });
 };

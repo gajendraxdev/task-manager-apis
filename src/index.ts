@@ -1,9 +1,9 @@
-import fastifyMongoDB from "@fastify/mongodb";
 import Fastify, { type FastifyInstance } from "fastify";
-import { registerRoutes } from "./components/registerRoutes.ts";
-import { ALLOWED_ORIGINS, MONGODB_URI, PORT } from "./constants/env.ts";
 import fastifyCors from "@fastify/cors";
+import { registerRoutes } from "./components/registerRoutes.ts";
+import { ALLOWED_ORIGINS, PORT } from "./constants/env.ts";
 import { isProdEnvironment } from "./components/utils/isProd.ts";
+import prisma from "./lib/prisma.ts";
 
 const app: FastifyInstance = Fastify({
   logger: isProdEnvironment()
@@ -30,9 +30,9 @@ app.get("/api/health", () => {
   return { status: true, message: "Server Looks good 👍" };
 });
 
-app.register(fastifyMongoDB, {
-  url: MONGODB_URI,
-  forceClose: true,
+// Graceful shutdown — disconnect Prisma on close
+app.addHook("onClose", async () => {
+  await prisma.$disconnect();
 });
 
 registerRoutes(app);

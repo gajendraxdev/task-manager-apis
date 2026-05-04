@@ -1,5 +1,4 @@
 import { type Static, type TSchema, Type } from "@sinclair/typebox";
-import type { ObjectId } from "mongodb";
 
 export enum TaskPriority {
   high = "high",
@@ -40,9 +39,7 @@ export const TaskUpdateSchema = Type.Object({
   assignedTo: Type.Optional(Type.String()),
   attachments: Type.Optional(Type.Array(Type.String())),
   tag: Type.Optional(Type.String()),
-  dependsOn: Type.Optional(
-    Type.Array(Type.Unsafe<ObjectId>({ type: "string" }))
-  ),
+  dependsOn: Type.Optional(Type.Array(Type.String())),
 
   updatedAt: Type.Optional(Type.String()),
 });
@@ -91,7 +88,7 @@ export const TaskParamsSchema = Type.Object({
 });
 
 export const TaskSchema = Type.Object({
-  _id: Type.Unsafe<ObjectId>({ type: "string" }), // Accepts MongoDB ObjectId as string
+  _id: Type.String(),
   title: Type.String(),
   slug: Type.Optional(Type.String()),
   ticket: Type.Optional(Type.String()),

@@ -1,7 +1,10 @@
-import type { Db, ObjectId } from "mongodb";
-import { objectId } from "./objectId.ts";
-
-export const isDataExistInDb = (db: Db, collection: string, id: string) => {
-  const data = db.collection(collection).find({ _id: objectId(id) });
-  return !!data;
+/**
+ * Legacy checkData utility — replaced by direct Prisma queries.
+ * Kept as a stub to avoid import errors.
+ */
+export const isDataExistInDb = async (
+  _collection: string,
+  _id: string,
+): Promise<boolean> => {
+  return true;
 };

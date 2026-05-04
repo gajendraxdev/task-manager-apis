@@ -2,7 +2,7 @@ import { type Static, Type } from "@sinclair/typebox";
 
 export enum WorkSpacePermissions {
   canAddTask = "canAddTask",
-  canEditTask = "canAddTask",
+  canEditTask = "canEditTask",
   canDeleteTask = "canDeleteTask",
   canInviteMembers = "canInviteMembers",
   canRemoveMembers = "canRemoveMembers",
@@ -16,10 +16,9 @@ export enum WorkSpaceRoles {
 }
 
 const WorkspaceUserLinkSchema = Type.Object({
-  workspaceId: Type.Array(Type.String()),
-  userId: Type.Array(Type.String()),
+  workspaceId: Type.String(),
+  userId: Type.String(),
   role: Type.Optional(Type.Enum(WorkSpaceRoles)),
-
   permissions: Type.Optional(Type.Array(Type.Enum(WorkSpacePermissions))),
 
   createdAt: Type.Optional(Type.String({ format: "date-time" })),

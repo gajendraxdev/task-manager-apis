@@ -1,0 +1,259 @@
+// Prisma 7 schema — rust-free ESM client
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  manager
+  user
+  admin
+  reviewer
+  owner
+}
+
+enum UserSignedUpWith {
+  EMAIL
+  GOOGLE
+  MICROSOFT
+}
+
+enum OrgRole {
+  admin
+  owner
+  guest
+  viewer
+  member
+}
+
+enum OrgPermission {
+  canCreateWorkSpace
+  canInviteMembers
+  canRemoveMembers
+  canEditOrganization
+  canDeleteOrganization
+  canViewReports
+  canManageBilling
+}
+
+enum WorkSpaceRole {
+  admin
+  member
+}
+
+enum WorkSpacePermission {
+  canAddTask
+  canEditTask
+  canDeleteTask
+  canInviteMembers
+  canRemoveMembers
+  canEditWorkspace
+  canDeleteWorkspace
+}
+
+enum TaskPriority {
+  high
+  medium
+  low
+}
+
+enum TaskStatus {
+  done
+  inprogress
+  todo
+  overdue
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id               String           @id @default(cuid())
+  name             String
+  username         String           @unique
+  email            String           @unique
+  password         String
+  role             UserRole?
+  profileImageId   String?
+  userSignedUpWith UserSignedUpWith?
+  isActive         Boolean          @default(true)
+  isEmailVerified  Boolean          @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  webauthnCredentials WebAuthnCredential[]
+  ownedOrganizations  Organization[]       @relation("OrgOwner")
+  orgLinks            OrgUserLink[]
+  projectLinks        ProjectUserLink[]
+  createdTasks        Task[]               @relation("TaskCreatedBy")
+  updatedTasks        Task[]               @relation("TaskUpdatedBy")
+  assignedTasks       Task[]               @relation("TaskAssignedTo")
+  assignedByTasks     Task[]               @relation("TaskAssignedBy")
+  createdProjects     Project[]
+
+  @@map("users")
+}
+
+model WebAuthnCredential {
+  id          String    @id @default(cuid())
+  credentialId String   @unique
+  publicKey   String
+  counter     Int       @default(0)
+  deviceName  String?
+  lastUsedAt  DateTime?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("webauthn_credentials")
+}
+
+model Organization {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+
+  ownerId String
+  owner   User   @relation("OrgOwner", fields: [ownerId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  userLinks OrgUserLink[]
+  projects  Project[]
+
+  @@map("organizations")
+}
+
+model OrgUserLink {
+  id             String          @id @default(cuid())
+  role           OrgRole?
+  permissions    OrgPermission[]
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([organizationId, userId])
+  @@map("org_user_links")
+}
+
+model Project {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation(fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  userLinks ProjectUserLink[]
+
+  @@map("projects")
+}
+
+model ProjectUserLink {
+  id          String                @id @default(cuid())
+  role        WorkSpaceRole?
+  permissions WorkSpacePermission[]
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, userId])
+  @@map("project_user_links")
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  title       String
+  slug        String?
+  ticket      String?      @unique
+  description String?
+  priority    TaskPriority @default(low)
+  status      TaskStatus   @default(todo)
+  deadLine    String
+  tag         String?
+  workspace   String
+
+  createdById  String?
+  createdBy    User?   @relation("TaskCreatedBy", fields: [createdById], references: [id])
+
+  updatedById  String?
+  updatedBy    User?   @relation("TaskUpdatedBy", fields: [updatedById], references: [id])
+
+  assignedToId String?
+  assignedTo   User?   @relation("TaskAssignedTo", fields: [assignedToId], references: [id])
+
+  assignedById String?
+  assignedBy   User?   @relation("TaskAssignedBy", fields: [assignedById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Self-referential many-to-many for task dependencies
+  dependsOn    TaskDependency[] @relation("DependentTask")
+  dependedOnBy TaskDependency[] @relation("DependencyTask")
+
+  // Documents attached to this task
+  attachments Document[]
+
+  @@map("tasks")
+}
+
+model TaskDependency {
+  id String @id @default(cuid())
+
+  dependentTaskId String
+  dependentTask   Task   @relation("DependentTask", fields: [dependentTaskId], references: [id], onDelete: Cascade)
+
+  dependencyTaskId String
+  dependencyTask   Task   @relation("DependencyTask", fields: [dependencyTaskId], references: [id], onDelete: Cascade)
+
+  @@unique([dependentTaskId, dependencyTaskId])
+  @@map("task_dependencies")
+}
+
+model Document {
+  id           String  @id @default(cuid())
+  originalname String
+  name         String
+  path         String
+  type         String?
+  url          String?
+
+  taskId String?
+  task   Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("documents")
+}

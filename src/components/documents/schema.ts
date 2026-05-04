@@ -1,9 +1,6 @@
 import { type Static, Type } from "@sinclair/typebox";
-import type { ObjectId } from "mongodb";
 
 export const DocumentCreateSchema = Type.Object({
-  _id: Type.Optional(Type.Unsafe<ObjectId>({ type: "string" })), // Accepts MongoDB ObjectId as string
-
   originalname: Type.String(),
   name: Type.String(),
   path: Type.String(),
@@ -15,8 +12,7 @@ export const DocumentCreateSchema = Type.Object({
 });
 
 export const DocumentSchema = Type.Object({
-  _id: Type.Optional(Type.Unsafe<ObjectId>({ type: "string" })), // Accepts MongoDB ObjectId as string
-
+  _id: Type.Optional(Type.String()),
   originalname: Type.String(),
   name: Type.String(),
   path: Type.String(),
