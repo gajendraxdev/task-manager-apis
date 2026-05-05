@@ -161,7 +161,7 @@ export const verifyOtp = async (
     throw new AppError("Something went wrong, please login again!", HTTP_STATUS.FORBIDDEN);
   }
 
-  const token = genLoginToken({ _id: user.id });
+  const token = genLoginToken({ _id: user.id }, { expiresIn: "7d" });
   delCache(CACHE_KEYS.OTP(email));
 
   await prisma.user.update({
@@ -339,6 +339,11 @@ export const passkeyRegisterOptions = async (
     select: { credentialId: true },
   });
 
+  // Limit to 10 passkeys per user
+  if (existingCredentials.length >= 10) {
+    throw new AppError("Maximum of 10 passkeys allowed per account.", HTTP_STATUS.BAD_REQUEST);
+  }
+
   const { generateRegistrationOptions } = await import("@simplewebauthn/server");
 
   const options = await generateRegistrationOptions({
@@ -351,7 +356,7 @@ export const passkeyRegisterOptions = async (
       id: c.credentialId,
     })),
     authenticatorSelection: {
-      residentKey: "preferred",
+      residentKey: "required",       // enables discoverable credentials
       userVerification: "preferred",
     },
   });
@@ -405,11 +410,24 @@ export const passkeyRegisterVerify = async (
 
 // ─── Passkey: Login Options ───────────────────────────────────────────────────
 export const passkeyLoginOptions = async (
-  req: FastifyRequest<{ Body: { email: string } }>,
+  req: FastifyRequest<{ Body: { email?: string } }>,
   reply: FastifyReply,
 ) => {
   const { email } = req.body;
 
+  const { generateAuthenticationOptions } = await import("@simplewebauthn/server");
+
+  // Discoverable mode — no email needed, browser picks the right passkey
+  if (!email) {
+    const options = await generateAuthenticationOptions({
+      rpID: new URL(APP_URL).hostname,
+      userVerification: "preferred",
+    });
+    setCache({ key: CACHE_KEYS.PASSKEY_AUTH_CHALLENGE("__discoverable__"), value: { challenge: options.challenge }, ttl: 300 });
+    return sendSuccess(reply, { ...options, discoverable: true });
+  }
+
+  // Email-scoped mode — only show passkeys for this account
   const user = await prisma.user.findUnique({
     where: { email },
     include: { webauthnCredentials: { select: { credentialId: true } } },
@@ -419,8 +437,6 @@ export const passkeyLoginOptions = async (
   if (!user || !user.webauthnCredentials.length) {
     throw new AppError("No passkeys found for this account.", HTTP_STATUS.BAD_REQUEST);
   }
-
-  const { generateAuthenticationOptions } = await import("@simplewebauthn/server");
 
   const options = await generateAuthenticationOptions({
     rpID: new URL(APP_URL).hostname,
@@ -435,24 +451,35 @@ export const passkeyLoginOptions = async (
 
 // ─── Passkey: Login Verify ────────────────────────────────────────────────────
 export const passkeyLoginVerify = async (
-  req: FastifyRequest<{ Body: { email: string; credential: Record<string, unknown> } }>,
+  req: FastifyRequest<{ Body: { email?: string; credential: Record<string, unknown> } }>,
   reply: FastifyReply,
 ) => {
   const { email, credential } = req.body;
+  const credentialId = (credential as any).id as string;
 
-  const cached = getCache<{ challenge: string }>(CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email));
+  // Resolve challenge key — discoverable uses a fixed key, email-scoped uses email
+  const cacheKey = email
+    ? CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email)
+    : CACHE_KEYS.PASSKEY_AUTH_CHALLENGE("__discoverable__");
+
+  const cached = getCache<{ challenge: string }>(cacheKey);
   if (!cached) throw new AppError("Challenge expired, please try again.", HTTP_STATUS.BAD_REQUEST);
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-    include: { webauthnCredentials: true },
+  // Find the credential — in discoverable mode we look up by credentialId directly
+  const storedCred = await prisma.webAuthnCredential.findUnique({
+    where: { credentialId },
+    include: { user: true },
   });
-  if (!user) throw new AppError("User not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.USER_NOT_FOUND);
 
-  const credentialId = (credential as any).id as string;
-  const storedCred = user.webauthnCredentials.find((c) => c.credentialId === credentialId);
   if (!storedCred) {
+    delCache(cacheKey);
     throw new AppError("Passkey not found.", HTTP_STATUS.NOT_FOUND, ERROR_CODES.PASSKEY_NOT_FOUND);
+  }
+
+  // In email-scoped mode, verify the credential belongs to the claimed email
+  if (email && storedCred.user.email !== email) {
+    delCache(cacheKey);
+    throw new AppError("Passkey verification failed.", HTTP_STATUS.UNAUTHORIZED, ERROR_CODES.PASSKEY_VERIFICATION_FAILED);
   }
 
   const { verifyAuthenticationResponse } = await import("@simplewebauthn/server");
@@ -471,7 +498,7 @@ export const passkeyLoginVerify = async (
 
   if (!verification.verified) {
     // Delete challenge on failure to prevent retry attacks
-    delCache(CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email));
+    delCache(cacheKey);
     throw new AppError("Passkey verification failed.", HTTP_STATUS.UNAUTHORIZED, ERROR_CODES.PASSKEY_VERIFICATION_FAILED);
   }
 
@@ -484,9 +511,9 @@ export const passkeyLoginVerify = async (
     },
   });
 
-  delCache(CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email));
+  delCache(cacheKey);
 
-  const token = genLoginToken({ _id: user.id });
+  const token = genLoginToken({ _id: storedCred.user.id }, { expiresIn: "7d" });
 
   return sendSuccess(reply, { token, message: "Signed in with passkey." });
 };
@@ -500,11 +527,36 @@ export const passkeyList = async (
 
   const credentials = await prisma.webAuthnCredential.findMany({
     where: { userId: _id },
-    select: { id: true, deviceName: true, lastUsedAt: true },
-    orderBy: { id: "desc" },
+    select: { id: true, deviceName: true, createdAt: true, lastUsedAt: true },
+    orderBy: { createdAt: "desc" },
   });
 
   return sendSuccess(reply, credentials);
+};
+
+// ─── Passkey: Rename ──────────────────────────────────────────────────────────
+export const passkeyRename = async (
+  req: FastifyRequest<{ Params: { id: string }; Body: { deviceName: string } }>,
+  reply: FastifyReply,
+) => {
+  const { _id } = req.user!;
+  const { id } = req.params;
+  const { deviceName } = req.body;
+
+  const credential = await prisma.webAuthnCredential.findFirst({
+    where: { id, userId: _id },
+  });
+  if (!credential) {
+    throw new AppError("Passkey not found.", HTTP_STATUS.NOT_FOUND, ERROR_CODES.PASSKEY_NOT_FOUND);
+  }
+
+  const updated = await prisma.webAuthnCredential.update({
+    where: { id },
+    data: { deviceName: deviceName.trim() || null },
+    select: { id: true, deviceName: true, createdAt: true, lastUsedAt: true },
+  });
+
+  return sendSuccess(reply, updated);
 };
 
 // ─── Passkey: Delete ──────────────────────────────────────────────────────────

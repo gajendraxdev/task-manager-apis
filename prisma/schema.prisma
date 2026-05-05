@@ -108,6 +108,7 @@ model WebAuthnCredential {
   counter     Int       @default(0)
   deviceName  String?
   lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)

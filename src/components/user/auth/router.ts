@@ -9,6 +9,7 @@ import {
   passkeyLoginVerify,
   passkeyRegisterOptions,
   passkeyRegisterVerify,
+  passkeyRename,
   resendOtp,
   resetPassword,
   signin,
@@ -100,6 +101,12 @@ export const authRouter = (
     "/passkey",
     { preHandler: [verifyToken] },
     catchHandler(passkeyList)
+  );
+
+  fastify.patch<{ Params: { id: string }; Body: { deviceName: string } }>(
+    "/passkey/:id",
+    { preHandler: [verifyToken] },
+    catchHandler(passkeyRename)
   );
 
   fastify.delete<{ Params: { id: string } }>(
