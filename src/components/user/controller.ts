@@ -5,6 +5,48 @@ import { HTTP_STATUS } from "../../constants/HTTP_STATUS.ts";
 import { ERROR_CODES } from "../../constants/constants.ts";
 import prisma from "../../lib/prisma.ts";
 
+// ─── Get Project Members ──────────────────────────────────────────────────────
+// Returns all users who are members of the same project as the logged-in user.
+// Used for the "Assign To" dropdown in task forms.
+export const getProjectMembers = async (
+  req: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  const { _id } = req.user || {};
+
+  if (!_id) {
+    throw new AppError("Unauthorized", HTTP_STATUS.UNAUTHORIZED);
+  }
+
+  // Find the project the current user belongs to
+  const projectLink = await prisma.projectUserLink.findFirst({
+    where: { userId: _id },
+    select: { projectId: true },
+  });
+
+  if (!projectLink) {
+    // User has no project yet — return just themselves
+    const self = await prisma.user.findUnique({
+      where: { id: _id },
+      select: { id: true, name: true, username: true, email: true, profileImageId: true },
+    });
+    return sendSuccess(reply, self ? [self] : []);
+  }
+
+  // Return all members of that project
+  const members = await prisma.projectUserLink.findMany({
+    where: { projectId: projectLink.projectId },
+    include: {
+      user: {
+        select: { id: true, name: true, username: true, email: true, profileImageId: true },
+      },
+    },
+  });
+
+  return sendSuccess(reply, members.map((m) => m.user));
+};
+
+// ─── Get My Details ───────────────────────────────────────────────────────────
 export const getMyDetails = async (
   req: FastifyRequest,
   reply: FastifyReply,

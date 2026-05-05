@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { authRouter } from "./auth/router.ts";
 import { catchHandler } from "../utils/catchHandler.ts";
-import { getMyDetails } from "./controller.ts";
+import { getMyDetails, getProjectMembers } from "./controller.ts";
 import { verifyToken } from "../../middleware/auth.ts";
 
 export const userRouter = (
@@ -12,9 +12,13 @@ export const userRouter = (
 
 	fastify.get(
 		"/profile",
-		{
-			preHandler: [verifyToken],
-		},
+		{ preHandler: [verifyToken] },
 		catchHandler(getMyDetails),
+	);
+
+	fastify.get(
+		"/project-members",
+		{ preHandler: [verifyToken] },
+		catchHandler(getProjectMembers),
 	);
 };

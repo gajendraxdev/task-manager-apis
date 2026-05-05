@@ -20,6 +20,17 @@ export const createTask = async (
   reply: FastifyReply,
 ): Promise<FastifyReply> => {
   const { body } = req;
+  const userId = req.user?._id;
+
+  // Resolve workspace: use body value, or fall back to user's project
+  let workspace = body.workspace || "";
+  if (!workspace && userId) {
+    const projectLink = await prisma.projectUserLink.findFirst({
+      where: { userId },
+      select: { projectId: true },
+    });
+    workspace = projectLink?.projectId || userId;
+  }
 
   const task = await prisma.task.create({
     data: {
@@ -28,8 +39,8 @@ export const createTask = async (
       priority: (body.priority || TaskPriority.low) as any,
       status: (body.status || TaskStatus.todo) as any,
       deadLine: body.deadLine,
-      workspace: body.workspace || "",
-      createdById: body.createdBy,
+      workspace,
+      createdById: body.createdBy || userId,
     },
   });
 
@@ -72,6 +83,21 @@ export const getAllTasks = async (
   reply: FastifyReply,
 ) => {
   const { query } = req;
+  const userId = req.user?._id;
+
+  // Auto-scope to the user's project workspace if no explicit workspace given
+  if (!query.workspace && userId) {
+    const projectLink = await prisma.projectUserLink.findFirst({
+      where: { userId },
+      select: { projectId: true },
+    });
+    if (projectLink) {
+      query.workspace = projectLink.projectId;
+    } else {
+      // No project — scope to tasks created by this user
+      query.createdBy = userId;
+    }
+  }
 
   const where = buildTaskWhereClause(query);
 
@@ -189,7 +215,7 @@ export const deleteTask = async (
 
   await prisma.task.delete({ where: { id: params.id } });
 
-  return sendSuccess(reply, task);
+  return sendSuccess(reply, serializeTask(task));
 };
 
 // ─── Query Builder ────────────────────────────────────────────────────────────

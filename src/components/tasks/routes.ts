@@ -8,6 +8,7 @@ import {
 } from "./controller.ts";
 
 import { catchHandler } from "../utils/catchHandler.ts";
+import { verifyToken } from "../../middleware/auth.ts";
 import {
 	TaskCreateSchema,
 	TaskFailedResponseSchema,
@@ -30,6 +31,7 @@ export const taskRouter = (
 	fastify.post<{ Body: TaskCreateT }>(
 		"/task",
 		{
+			preHandler: [verifyToken],
 			schema: {
 				body: TaskCreateSchema,
 				response: {
@@ -45,6 +47,7 @@ export const taskRouter = (
 	fastify.get<{ Querystring: TaskQueryT }>(
 		"/task",
 		{
+			preHandler: [verifyToken],
 			schema: {
 				querystring: TaskQuerySchema,
 				response: {
@@ -60,6 +63,7 @@ export const taskRouter = (
 	fastify.get<{ Params: TaskParamsT }>(
 		"/task/:id",
 		{
+			preHandler: [verifyToken],
 			schema: {
 				params: TaskParamsSchema,
 				response: {
@@ -76,6 +80,7 @@ export const taskRouter = (
 	fastify.patch<{ Params: TaskParamsT; Body: TaskUpdateT }>(
 		"/task/:id",
 		{
+			preHandler: [verifyToken],
 			schema: {
 				params: TaskParamsSchema,
 				response: {
@@ -92,6 +97,7 @@ export const taskRouter = (
 	fastify.delete<{ Params: TaskParamsT }>(
 		"/task/:id",
 		{
+			preHandler: [verifyToken],
 			schema: {
 				params: TaskParamsSchema,
 				response: {
