@@ -11,4 +11,4 @@ export interface SendNotificationParamsType
   variables: Record<string, string>;
 }
 
-export type sendNotificationType = "otp" | "confirmation";
+export type sendNotificationType = "otp" | "confirmation" | "reset-password";

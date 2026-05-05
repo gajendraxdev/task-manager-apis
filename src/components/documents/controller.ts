@@ -5,7 +5,9 @@ import {
   uploadFile,
 } from "../../lib/storageProvider.ts";
 import { HTTP_STATUS } from "../../constants/HTTP_STATUS.ts";
+import { ERROR_CODES } from "../../constants/constants.ts";
 import { AppError } from "../utils/AppError.ts";
+import { sendSuccess } from "../utils/response.ts";
 import type { AnyType } from "../../types/types.ts";
 import prisma from "../../lib/prisma.ts";
 
@@ -19,24 +21,20 @@ export const addDocument = async (
   const taskId = body?.for?.value;
 
   if (!taskId) {
-    throw new AppError("Please specify task", HTTP_STATUS.BAD_REQUEST);
+    throw new AppError("Please specify a task", HTTP_STATUS.BAD_REQUEST);
   }
 
-  // Verify task exists
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) {
-    throw new AppError("The task does not exist", HTTP_STATUS.BAD_REQUEST);
+    throw new AppError("Task does not exist", HTTP_STATUS.BAD_REQUEST, ERROR_CODES.TASK_NOT_FOUND);
   }
 
   const filebuffer = await fileData?.toBuffer();
-  const file = {
-    originalname: fileData?.filename,
-    buffer: filebuffer,
-  };
+  const file = { originalname: fileData?.filename, buffer: filebuffer };
 
   const uploadResp = await uploadFile(file);
   if (uploadResp.error) throw new AppError(uploadResp.error);
-  if (!uploadResp.data) throw new AppError("Upload failed: No data returned.");
+  if (!uploadResp.data) throw new AppError("Upload failed: no data returned.");
 
   const document = await prisma.document.create({
     data: {
@@ -49,12 +47,7 @@ export const addDocument = async (
     },
   });
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    data: serializeDocument(document),
-    error: null,
-    statusCode: HTTP_STATUS.OK,
-  });
+  return sendSuccess(reply, serializeDocument(document), HTTP_STATUS.CREATED);
 };
 
 // ─── Get Document ─────────────────────────────────────────────────────────────
@@ -64,19 +57,15 @@ export const getDocument = async (
 ) => {
   const { id } = req.params;
 
-  // Try by id first, then by name
   const document = await prisma.document.findFirst({
     where: { OR: [{ id }, { name: id }] },
   });
 
-  if (!document) throw new AppError("Document not found", 404);
+  if (!document) {
+    throw new AppError("Document not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.DOCUMENT_NOT_FOUND);
+  }
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    data: serializeDocument(document),
-    error: null,
-    statusCode: HTTP_STATUS.OK,
-  });
+  return sendSuccess(reply, serializeDocument(document));
 };
 
 // ─── Get Signed URL ───────────────────────────────────────────────────────────
@@ -86,17 +75,12 @@ export const getSignedUrl = async (
 ) => {
   const { filename } = req.body;
 
-  if (!filename) throw new AppError("Please provide the file name", 400);
+  if (!filename) throw new AppError("Please provide the file name", HTTP_STATUS.BAD_REQUEST);
 
   const data = await genSignedDownloadUrl(filename);
   if (data.error) throw new AppError(data.error);
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    statusCode: HTTP_STATUS.OK,
-    data: { url: data.url },
-    error: null,
-  });
+  return sendSuccess(reply, { url: data.url });
 };
 
 // ─── Delete Document ──────────────────────────────────────────────────────────
@@ -108,7 +92,7 @@ export const deleteDocument = async (
 
   const document = await prisma.document.findUnique({ where: { id } });
   if (!document) {
-    throw new AppError("File does not exist", HTTP_STATUS.NOT_FOUND);
+    throw new AppError("File does not exist", HTTP_STATUS.NOT_FOUND, ERROR_CODES.DOCUMENT_NOT_FOUND);
   }
 
   const deleteInfo = await removeFile(document.name);
@@ -116,17 +100,13 @@ export const deleteDocument = async (
 
   await prisma.document.delete({ where: { id } });
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    data: { deleted: true, id },
-    statusCode: HTTP_STATUS.OK,
-    error: null,
-  });
+  return sendSuccess(reply, { deleted: true, id });
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Serializer ───────────────────────────────────────────────────────────────
 
-function serializeDocument(doc: any) {
+// biome-ignore lint/suspicious/noExplicitAny: Prisma return type
+export function serializeDocument(doc: any) {
   return {
     _id: doc.id,
     id: doc.id,

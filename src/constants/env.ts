@@ -29,4 +29,6 @@ export const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGIN
   ? process.env.ALLOWED_ORIGIN?.split(",")
   : "*";
 
+export const APP_URL = process.env.APP_URL || "http://localhost:5173";
+
 export const JWT_SECRET = process.env.JWT_SECRET || "superSecret";

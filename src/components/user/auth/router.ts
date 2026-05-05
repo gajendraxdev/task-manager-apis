@@ -2,7 +2,9 @@ import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { catchHandler } from "../../utils/catchHandler.ts";
 import {
   checkUser,
+  forgotPassword,
   resendOtp,
+  resetPassword,
   signin,
   signup,
   suggestUserNames,
@@ -47,7 +49,17 @@ export const authRouter = (
         body: SignInSchema,
       },
     },
-
     catchHandler(signin)
+  );
+
+  // ─── Password Reset ──────────────────────────────────────────────────────
+  fastify.post<{ Body: { email: string } }>(
+    "/forgot-password",
+    catchHandler(forgotPassword)
+  );
+
+  fastify.post<{ Body: { email: string; token: string; newPassword: string } }>(
+    "/reset-password",
+    catchHandler(resetPassword)
   );
 };

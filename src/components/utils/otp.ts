@@ -1,5 +1,6 @@
 import { NODE_MAILER_SENDER_EMAIL } from "../../constants/env.ts";
 import { setCache } from "../../lib/node-cache.ts";
+import { CACHE_KEYS } from "../../constants/cacheKeys.ts";
 import { AppError } from "./AppError.ts";
 import { generateOTP } from "./genRendomString.ts";
 import { sendNotification } from "./notification.ts";
@@ -14,7 +15,7 @@ export const sendOtp = async (email: string, userName: string) => {
   };
 
   setCache({
-    key: email,
+    key: CACHE_KEYS.OTP(email),
     value: { otp },
     ttl: 1000,
   });

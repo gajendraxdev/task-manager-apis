@@ -1,7 +1,8 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { HTTP_STATUS } from "../../constants/HTTP_STATUS.ts";
+import { ERROR_CODES } from "../../constants/constants.ts";
 import { AppError } from "../utils/AppError.ts";
-import { filterData } from "../utils/filterData.ts";
+import { sendSuccess } from "../utils/response.ts";
 import {
   TaskPriority,
   TaskStatus,
@@ -32,7 +33,6 @@ export const createTask = async (
     },
   });
 
-  // Handle dependsOn — create TaskDependency rows
   if (body.dependsOn?.length) {
     await prisma.taskDependency.createMany({
       data: body.dependsOn.map((depId) => ({
@@ -45,12 +45,7 @@ export const createTask = async (
 
   const fullTask = await getTaskWithRelations(task.id);
 
-  return reply.status(HTTP_STATUS.CREATED).send({
-    status: true,
-    data: serializeTask(fullTask),
-    error: null,
-    statusCode: HTTP_STATUS.CREATED,
-  });
+  return sendSuccess(reply, serializeTask(fullTask), HTTP_STATUS.CREATED);
 };
 
 // ─── Get All Tasks ────────────────────────────────────────────────────────────
@@ -60,44 +55,7 @@ export const getAllTasks = async (
 ) => {
   const { query } = req;
 
-  const where: Prisma.TaskWhereInput = {};
-
-  // Basic filters
-  if (query.title) where.title = { contains: query.title, mode: "insensitive" };
-  if (query.description) where.description = { contains: query.description, mode: "insensitive" };
-  if (query.priority) where.priority = query.priority as any;
-  if (query.status && query.status !== "all") where.status = query.status as any;
-  if (query.tag) where.tag = query.tag;
-  if (query.workspace) where.workspace = query.workspace;
-  if (query.createdBy) where.createdById = query.createdBy;
-  if (query.assignedTo) where.assignedToId = query.assignedTo;
-  if (query.assignedBy) where.assignedById = query.assignedBy;
-
-  // Date range filters
-  if (query.deadLine_from || query.deadLine_to) {
-    where.deadLine = {};
-    if (query.deadLine_from) (where.deadLine as any).gte = new Date(query.deadLine_from).toISOString();
-    if (query.deadLine_to) (where.deadLine as any).lte = new Date(query.deadLine_to).toISOString();
-  }
-
-  if (query.created_from || query.created_to) {
-    where.createdAt = {};
-    if (query.created_from) (where.createdAt as any).gte = new Date(query.created_from);
-    if (query.created_to) (where.createdAt as any).lte = new Date(query.created_to);
-  }
-
-  // Search across title and ticket
-  if (query.search) {
-    where.OR = [
-      { title: { contains: query.search, mode: "insensitive" } },
-      { ticket: { contains: query.search, mode: "insensitive" } },
-    ];
-  }
-
-  // Exclude specific IDs
-  if (query.exclude) {
-    where.id = { notIn: query.exclude.split(",") };
-  }
+  const where = buildTaskWhereClause(query);
 
   const orderBy: Prisma.TaskOrderByWithRelationInput = {
     createdAt: query.sort === "1" ? "asc" : "desc",
@@ -107,21 +65,12 @@ export const getAllTasks = async (
     where,
     orderBy,
     include: {
-      dependsOn: {
-        include: {
-          dependencyTask: true,
-        },
-      },
+      dependsOn: { include: { dependencyTask: true } },
       attachments: true,
     },
   });
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    data: tasks.map(serializeTask),
-    statusCode: HTTP_STATUS.OK,
-    error: null,
-  });
+  return sendSuccess(reply, tasks.map(serializeTask));
 };
 
 // ─── Get One Task ─────────────────────────────────────────────────────────────
@@ -134,15 +83,10 @@ export const getOneTasks = async (
   const task = await getTaskWithRelations(id);
 
   if (!task) {
-    throw new AppError("Task not found", 404);
+    throw new AppError("Task not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.TASK_NOT_FOUND);
   }
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    data: serializeTask(task),
-    statusCode: HTTP_STATUS.OK,
-    error: null,
-  });
+  return sendSuccess(reply, serializeTask(task));
 };
 
 // ─── Update Task ──────────────────────────────────────────────────────────────
@@ -153,7 +97,9 @@ export const updateTask = async (
   const { params, body } = req;
 
   const existing = await prisma.task.findUnique({ where: { id: params.id } });
-  if (!existing) throw new AppError("Task not found", 404);
+  if (!existing) {
+    throw new AppError("Task not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.TASK_NOT_FOUND);
+  }
 
   const updateData: Prisma.TaskUpdateInput = {};
 
@@ -163,21 +109,19 @@ export const updateTask = async (
   if (body.status !== undefined) updateData.status = body.status as any;
   if (body.deadLine !== undefined) updateData.deadLine = body.deadLine;
   if (body.tag !== undefined) updateData.tag = body.tag;
-  if (body.assignedTo !== undefined) updateData.assignedTo = body.assignedTo
-    ? { connect: { id: body.assignedTo } }
-    : { disconnect: true };
+  if (body.assignedTo !== undefined) {
+    updateData.assignedTo = body.assignedTo
+      ? { connect: { id: body.assignedTo } }
+      : { disconnect: true };
+  }
 
   const task = await prisma.task.update({
     where: { id: params.id },
     data: updateData,
   });
 
-  // Update dependencies if provided
   if (body.dependsOn !== undefined) {
-    // Remove old dependencies and recreate
-    await prisma.taskDependency.deleteMany({
-      where: { dependentTaskId: params.id },
-    });
+    await prisma.taskDependency.deleteMany({ where: { dependentTaskId: params.id } });
 
     if (body.dependsOn.length > 0) {
       const uniqueDeps = [...new Set(body.dependsOn.map(String))];
@@ -193,12 +137,7 @@ export const updateTask = async (
 
   const fullTask = await getTaskWithRelations(task.id);
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    data: serializeTask(fullTask),
-    error: null,
-    statusCode: HTTP_STATUS.OK,
-  });
+  return sendSuccess(reply, serializeTask(fullTask));
 };
 
 // ─── Delete Task ──────────────────────────────────────────────────────────────
@@ -209,37 +148,74 @@ export const deleteTask = async (
   const { params } = req;
 
   const task = await prisma.task.findUnique({ where: { id: params.id } });
-  if (!task) throw new AppError("Task not found", 404);
+  if (!task) {
+    throw new AppError("Task not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.TASK_NOT_FOUND);
+  }
 
   await prisma.task.delete({ where: { id: params.id } });
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    statusCode: HTTP_STATUS.OK,
-    error: null,
-    data: task,
-  });
+  return sendSuccess(reply, task);
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Query Builder ────────────────────────────────────────────────────────────
 
-async function getTaskWithRelations(id: string) {
+function buildTaskWhereClause(query: TaskQueryT): Prisma.TaskWhereInput {
+  const where: Prisma.TaskWhereInput = {};
+
+  if (query.title) where.title = { contains: query.title, mode: "insensitive" };
+  if (query.description) where.description = { contains: query.description, mode: "insensitive" };
+  if (query.priority) where.priority = query.priority as any;
+  if (query.status && query.status !== "all") where.status = query.status as any;
+  if (query.tag) where.tag = query.tag;
+  if (query.workspace) where.workspace = query.workspace;
+  if (query.createdBy) where.createdById = query.createdBy;
+  if (query.assignedTo) where.assignedToId = query.assignedTo;
+  if (query.assignedBy) where.assignedById = query.assignedBy;
+
+  if (query.deadLine_from || query.deadLine_to) {
+    where.deadLine = {
+      ...(query.deadLine_from && { gte: new Date(query.deadLine_from).toISOString() }),
+      ...(query.deadLine_to && { lte: new Date(query.deadLine_to).toISOString() }),
+    } as any;
+  }
+
+  if (query.created_from || query.created_to) {
+    where.createdAt = {
+      ...(query.created_from && { gte: new Date(query.created_from) }),
+      ...(query.created_to && { lte: new Date(query.created_to) }),
+    } as any;
+  }
+
+  if (query.search) {
+    where.OR = [
+      { title: { contains: query.search, mode: "insensitive" } },
+      { ticket: { contains: query.search, mode: "insensitive" } },
+    ];
+  }
+
+  if (query.exclude) {
+    where.id = { notIn: query.exclude.split(",") };
+  }
+
+  return where;
+}
+
+// ─── Repository Helper ────────────────────────────────────────────────────────
+
+function getTaskWithRelations(id: string) {
   return prisma.task.findUnique({
     where: { id },
     include: {
-      dependsOn: {
-        include: { dependencyTask: true },
-      },
+      dependsOn: { include: { dependencyTask: true } },
       attachments: true,
     },
   });
 }
 
-/**
- * Serialize a Prisma task to match the original MongoDB response shape
- * so the frontend doesn't break.
- */
-function serializeTask(task: any) {
+// ─── Serializer ───────────────────────────────────────────────────────────────
+
+// biome-ignore lint/suspicious/noExplicitAny: Prisma return type is complex
+export function serializeTask(task: any) {
   if (!task) return null;
 
   return {
@@ -258,7 +234,6 @@ function serializeTask(task: any) {
     updatedBy: task.updatedById,
     assignedTo: task.assignedToId,
     assignedBy: task.assignedById,
-    // dependenciesList mirrors the old $lookup result
     dependenciesList: task.dependsOn?.map((d: any) => serializeTask(d.dependencyTask)) ?? [],
     dependsOn: task.dependsOn?.map((d: any) => d.dependencyTaskId) ?? [],
     attachedDocuments: task.attachments ?? [],

@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { AppError } from "../utils/AppError.ts";
+import { sendSuccess } from "../utils/response.ts";
 import { HTTP_STATUS } from "../../constants/HTTP_STATUS.ts";
 import { ERROR_CODES } from "../../constants/constants.ts";
 import prisma from "../../lib/prisma.ts";
@@ -28,22 +29,12 @@ export const getMyDetails = async (
       isEmailVerified: true,
       createdAt: true,
       updatedAt: true,
-      // exclude password
     },
   });
 
   if (!user) {
-    throw new AppError(
-      "User not found",
-      HTTP_STATUS.NOT_FOUND,
-      ERROR_CODES.USER_NOT_FOUND,
-    );
+    throw new AppError("User not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.USER_NOT_FOUND);
   }
 
-  return reply.status(HTTP_STATUS.OK).send({
-    status: true,
-    data: user,
-    statusCode: HTTP_STATUS.OK,
-    error: null,
-  });
+  return sendSuccess(reply, user);
 };

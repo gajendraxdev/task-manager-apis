@@ -10,6 +10,7 @@ export const getTemplate = (type: sendNotificationType) => {
   const templates = {
     otp: fs.readFileSync(path.resolve(__dirname, "./otp-template.html"), "utf-8"),
     confirmation: "",
+    "reset-password": fs.readFileSync(path.resolve(__dirname, "./reset-password-template.html"), "utf-8"),
   };
 
   return templates[type];
