@@ -32,6 +32,23 @@ export const createTask = async (
     workspace = projectLink?.projectId || userId;
   }
 
+  // Validate dependsOn IDs BEFORE creating the task — avoids orphaned tasks
+  if (body.dependsOn?.length) {
+    const existingTasks = await prisma.task.findMany({
+      where: { id: { in: body.dependsOn } },
+      select: { id: true },
+    });
+    const existingIds = new Set(existingTasks.map((t) => t.id));
+    const invalidIds = body.dependsOn.filter((id) => !existingIds.has(id));
+    if (invalidIds.length > 0) {
+      throw new AppError(
+        `Invalid dependsOn task IDs: ${invalidIds.join(", ")}`,
+        HTTP_STATUS.BAD_REQUEST,
+        ERROR_CODES.TASK_NOT_FOUND,
+      );
+    }
+  }
+
   const task = await prisma.task.create({
     data: {
       title: body.title,
@@ -45,24 +62,6 @@ export const createTask = async (
   });
 
   if (body.dependsOn?.length) {
-    const existingTasks = await prisma.task.findMany({
-      where: { id: { in: body.dependsOn } },
-      select: { id: true },
-    });
-
-    const existingIds = new Set(existingTasks.map((t) => t.id));
-    const invalidIds = body.dependsOn.filter((id) => !existingIds.has(id));
-
-    if (invalidIds.length > 0) {
-      // Roll back the created task before throwing
-      await prisma.task.delete({ where: { id: task.id } });
-      throw new AppError(
-        `Invalid dependsOn task IDs: ${invalidIds.join(", ")}`,
-        HTTP_STATUS.BAD_REQUEST,
-        ERROR_CODES.TASK_NOT_FOUND,
-      );
-    }
-
     await prisma.taskDependency.createMany({
       data: body.dependsOn.map((depId) => ({
         dependentTaskId: task.id,
@@ -281,7 +280,6 @@ export function serializeTask(task: any) {
 
   return {
     _id: task.id,
-    id: task.id,
     title: task.title,
     slug: task.slug,
     ticket: task.ticket,

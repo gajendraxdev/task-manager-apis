@@ -3,13 +3,6 @@ import { catchHandler } from "../../utils/catchHandler.ts";
 import {
   checkUser,
   forgotPassword,
-  passkeyDelete,
-  passkeyList,
-  passkeyLoginOptions,
-  passkeyLoginVerify,
-  passkeyRegisterOptions,
-  passkeyRegisterVerify,
-  passkeyRename,
   resendOtp,
   resetPassword,
   signin,
@@ -17,6 +10,15 @@ import {
   suggestUserNames,
   verifyOtp,
 } from "./controller.ts";
+import {
+  passkeyDelete,
+  passkeyList,
+  passkeyLoginOptions,
+  passkeyLoginVerify,
+  passkeyRegisterOptions,
+  passkeyRegisterVerify,
+  passkeyRename,
+} from "./passkeyController.ts";
 import {
   SignInSchema,
   type SignInPayloadT,

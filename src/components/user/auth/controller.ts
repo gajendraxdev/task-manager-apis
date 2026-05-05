@@ -321,8 +321,6 @@ export const resetPassword = async (
   return sendSuccess(reply, { message: "Password reset successfully. You can now log in." });
 };
 
-// ─── Passkey: Registration Options ───────────────────────────────────────────
-export const passkeyRegisterOptions = async (
   req: FastifyRequest,
   reply: FastifyReply,
 ) => {
