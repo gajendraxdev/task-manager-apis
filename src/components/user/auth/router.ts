@@ -3,6 +3,12 @@ import { catchHandler } from "../../utils/catchHandler.ts";
 import {
   checkUser,
   forgotPassword,
+  passkeyDelete,
+  passkeyList,
+  passkeyLoginOptions,
+  passkeyLoginVerify,
+  passkeyRegisterOptions,
+  passkeyRegisterVerify,
   resendOtp,
   resetPassword,
   signin,
@@ -15,6 +21,7 @@ import {
   type SignInPayloadT,
   type SignUpUserPayloadType,
 } from "./schema.ts";
+import { verifyToken } from "../../../middleware/auth.ts";
 
 export const authRouter = (
   fastify: FastifyInstance,
@@ -61,5 +68,43 @@ export const authRouter = (
   fastify.post<{ Body: { email: string; token: string; newPassword: string } }>(
     "/reset-password",
     catchHandler(resetPassword)
+  );
+
+  // ─── Passkey (WebAuthn) ───────────────────────────────────────────────────
+  // Registration (requires auth — user must be logged in to add a passkey)
+  fastify.get(
+    "/passkey/register/options",
+    { preHandler: [verifyToken] },
+    catchHandler(passkeyRegisterOptions)
+  );
+
+  fastify.post<{ Body: { credential: Record<string, unknown>; deviceName?: string } }>(
+    "/passkey/register/verify",
+    { preHandler: [verifyToken] },
+    catchHandler(passkeyRegisterVerify)
+  );
+
+  // Authentication (public — user is not logged in yet)
+  fastify.post<{ Body: { email: string } }>(
+    "/passkey/login/options",
+    catchHandler(passkeyLoginOptions)
+  );
+
+  fastify.post<{ Body: { email: string; credential: Record<string, unknown> } }>(
+    "/passkey/login/verify",
+    catchHandler(passkeyLoginVerify)
+  );
+
+  // Manage passkeys (requires auth)
+  fastify.get(
+    "/passkey",
+    { preHandler: [verifyToken] },
+    catchHandler(passkeyList)
+  );
+
+  fastify.delete<{ Params: { id: string } }>(
+    "/passkey/:id",
+    { preHandler: [verifyToken] },
+    catchHandler(passkeyDelete)
   );
 };

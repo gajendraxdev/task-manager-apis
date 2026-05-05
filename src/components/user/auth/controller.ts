@@ -320,3 +320,209 @@ export const resetPassword = async (
 
   return sendSuccess(reply, { message: "Password reset successfully. You can now log in." });
 };
+
+// ─── Passkey: Registration Options ───────────────────────────────────────────
+export const passkeyRegisterOptions = async (
+  req: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  const { _id } = req.user!;
+
+  const user = await prisma.user.findUnique({
+    where: { id: _id },
+    select: { id: true, email: true, name: true, username: true },
+  });
+  if (!user) throw new AppError("User not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.USER_NOT_FOUND);
+
+  const existingCredentials = await prisma.webAuthnCredential.findMany({
+    where: { userId: _id },
+    select: { credentialId: true },
+  });
+
+  const { generateRegistrationOptions } = await import("@simplewebauthn/server");
+
+  const options = await generateRegistrationOptions({
+    rpName: "TaskFlow",
+    rpID: new URL(APP_URL).hostname,
+    userName: user.username,
+    userDisplayName: user.name,
+    attestationType: "none",
+    excludeCredentials: existingCredentials.map((c) => ({
+      id: c.credentialId,
+    })),
+    authenticatorSelection: {
+      residentKey: "preferred",
+      userVerification: "preferred",
+    },
+  });
+
+  // Cache challenge for 5 minutes
+  setCache({ key: CACHE_KEYS.PASSKEY_REG_CHALLENGE(_id), value: { challenge: options.challenge }, ttl: 300 });
+
+  return sendSuccess(reply, options);
+};
+
+// ─── Passkey: Registration Verify ────────────────────────────────────────────
+export const passkeyRegisterVerify = async (
+  req: FastifyRequest<{ Body: { credential: Record<string, unknown>; deviceName?: string } }>,
+  reply: FastifyReply,
+) => {
+  const { _id } = req.user!;
+  const { credential, deviceName } = req.body;
+
+  const cached = getCache<{ challenge: string }>(CACHE_KEYS.PASSKEY_REG_CHALLENGE(_id));
+  if (!cached) throw new AppError("Challenge expired, please try again.", HTTP_STATUS.BAD_REQUEST);
+
+  const { verifyRegistrationResponse } = await import("@simplewebauthn/server");
+
+  const verification = await verifyRegistrationResponse({
+    response: credential as any,
+    expectedChallenge: cached.challenge,
+    expectedOrigin: APP_URL,
+    expectedRPID: new URL(APP_URL).hostname,
+  });
+
+  if (!verification.verified || !verification.registrationInfo) {
+    throw new AppError("Passkey verification failed.", HTTP_STATUS.BAD_REQUEST, ERROR_CODES.PASSKEY_VERIFICATION_FAILED);
+  }
+
+  const { credential: cred } = verification.registrationInfo;
+
+  await prisma.webAuthnCredential.create({
+    data: {
+      userId: _id,
+      credentialId: cred.id,
+      publicKey: Buffer.from(cred.publicKey).toString("base64"),
+      counter: cred.counter,
+      deviceName: deviceName || null,
+    },
+  });
+
+  delCache(CACHE_KEYS.PASSKEY_REG_CHALLENGE(_id));
+
+  return sendSuccess(reply, { message: "Passkey registered successfully." });
+};
+
+// ─── Passkey: Login Options ───────────────────────────────────────────────────
+export const passkeyLoginOptions = async (
+  req: FastifyRequest<{ Body: { email: string } }>,
+  reply: FastifyReply,
+) => {
+  const { email } = req.body;
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    include: { webauthnCredentials: { select: { credentialId: true } } },
+  });
+
+  // Generic error — don't reveal whether the email exists
+  if (!user || !user.webauthnCredentials.length) {
+    throw new AppError("No passkeys found for this account.", HTTP_STATUS.BAD_REQUEST);
+  }
+
+  const { generateAuthenticationOptions } = await import("@simplewebauthn/server");
+
+  const options = await generateAuthenticationOptions({
+    rpID: new URL(APP_URL).hostname,
+    userVerification: "preferred",
+    allowCredentials: user.webauthnCredentials.map((c) => ({ id: c.credentialId })),
+  });
+
+  setCache({ key: CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email), value: { challenge: options.challenge }, ttl: 300 });
+
+  return sendSuccess(reply, options);
+};
+
+// ─── Passkey: Login Verify ────────────────────────────────────────────────────
+export const passkeyLoginVerify = async (
+  req: FastifyRequest<{ Body: { email: string; credential: Record<string, unknown> } }>,
+  reply: FastifyReply,
+) => {
+  const { email, credential } = req.body;
+
+  const cached = getCache<{ challenge: string }>(CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email));
+  if (!cached) throw new AppError("Challenge expired, please try again.", HTTP_STATUS.BAD_REQUEST);
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    include: { webauthnCredentials: true },
+  });
+  if (!user) throw new AppError("User not found", HTTP_STATUS.NOT_FOUND, ERROR_CODES.USER_NOT_FOUND);
+
+  const credentialId = (credential as any).id as string;
+  const storedCred = user.webauthnCredentials.find((c) => c.credentialId === credentialId);
+  if (!storedCred) {
+    throw new AppError("Passkey not found.", HTTP_STATUS.NOT_FOUND, ERROR_CODES.PASSKEY_NOT_FOUND);
+  }
+
+  const { verifyAuthenticationResponse } = await import("@simplewebauthn/server");
+
+  const verification = await verifyAuthenticationResponse({
+    response: credential as any,
+    expectedChallenge: cached.challenge,
+    expectedOrigin: APP_URL,
+    expectedRPID: new URL(APP_URL).hostname,
+    credential: {
+      id: storedCred.credentialId,
+      publicKey: new Uint8Array(Buffer.from(storedCred.publicKey, "base64")),
+      counter: storedCred.counter,
+    },
+  });
+
+  if (!verification.verified) {
+    // Delete challenge on failure to prevent retry attacks
+    delCache(CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email));
+    throw new AppError("Passkey verification failed.", HTTP_STATUS.UNAUTHORIZED, ERROR_CODES.PASSKEY_VERIFICATION_FAILED);
+  }
+
+  // Update counter to prevent replay attacks
+  await prisma.webAuthnCredential.update({
+    where: { id: storedCred.id },
+    data: {
+      counter: verification.authenticationInfo.newCounter,
+      lastUsedAt: new Date(),
+    },
+  });
+
+  delCache(CACHE_KEYS.PASSKEY_AUTH_CHALLENGE(email));
+
+  const token = genLoginToken({ _id: user.id });
+
+  return sendSuccess(reply, { token, message: "Signed in with passkey." });
+};
+
+// ─── Passkey: List ────────────────────────────────────────────────────────────
+export const passkeyList = async (
+  req: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  const { _id } = req.user!;
+
+  const credentials = await prisma.webAuthnCredential.findMany({
+    where: { userId: _id },
+    select: { id: true, deviceName: true, lastUsedAt: true },
+    orderBy: { id: "desc" },
+  });
+
+  return sendSuccess(reply, credentials);
+};
+
+// ─── Passkey: Delete ──────────────────────────────────────────────────────────
+export const passkeyDelete = async (
+  req: FastifyRequest<{ Params: { id: string } }>,
+  reply: FastifyReply,
+) => {
+  const { _id } = req.user!;
+  const { id } = req.params;
+
+  const credential = await prisma.webAuthnCredential.findFirst({
+    where: { id, userId: _id },
+  });
+  if (!credential) {
+    throw new AppError("Passkey not found.", HTTP_STATUS.NOT_FOUND, ERROR_CODES.PASSKEY_NOT_FOUND);
+  }
+
+  await prisma.webAuthnCredential.delete({ where: { id } });
+
+  return sendSuccess(reply, { message: "Passkey removed." });
+};
